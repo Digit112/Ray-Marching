@@ -50,7 +50,11 @@ object::object(dist_f distance, vecd3 pos, quaternion rot, rgb diff_color, rgb s
 /* ---- light ---- */
 
 light::light() {}
-light::light(vecd3 pos, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color) : pos(pos), diff_brightness(diff_brightness), diff_color(diff_color), spec_brightness(spec_brightness), spec_color(spec_color) {}
+light::light(vecd3 pos, float radius, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color) : pos(pos), radius(radius), diff_brightness(diff_brightness), diff_color(diff_color), spec_brightness(spec_brightness), spec_color(spec_color) {}
+
+/* ---- collision ---- */
+
+collision::collision() : pos(0, 0, 0), object_ind(-1), approach_min(1E20), approach_pos(0, 0, 0) {}
 
 /* ---- scene_descriptor ---- */
 
@@ -83,8 +87,9 @@ void scene_descriptor::add_object_with_params(dist_f distance, vecd3 pos, quater
 	}
 }
 
-void scene_descriptor::add_light(vecd3 pos, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color) {
+void scene_descriptor::add_light(vecd3 pos, float radius, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color) {
 	lights[lights_n].pos = pos;
+	lights[lights_n].radius = radius;
 	lights[lights_n].diff_brightness = diff_brightness;
 	lights[lights_n].diff_color = diff_color;
 	lights[lights_n].spec_brightness = spec_brightness;
@@ -124,6 +129,9 @@ distance_to_object scene_descriptor::distance(vecd3 pos) const {
 collision scene_descriptor::raymarch(vecd3 ray_pos, vecd3 ray_dir) const {
 	collision c;
 	
+	vecd3 approach_pos_t;
+	float approach_min_t = 1E20;
+	
 	// For each iteration...
 	for (int i = 0; i < 400; i++) {
 		// Get the distance to the scene.
@@ -139,6 +147,16 @@ collision scene_descriptor::raymarch(vecd3 ray_pos, vecd3 ray_dir) const {
 		// If the distance is too large, quit.
 		if (d.dis > 20) {
 			return c;
+		}
+		
+		// Record the closest approach.
+		if (d.dis < approach_min_t) {
+			approach_min_t = d.dis;
+			approach_pos_t = ray_pos;
+		}
+		else if (d.dis > approach_min_t * 2) {
+			c.approach_min = approach_min_t;
+			c.approach_pos = approach_pos_t;
 		}
 		
 		// Advance the ray "dis" units.
@@ -214,7 +232,7 @@ void camera::render(const scene_descriptor& sd, int width, int height, uint8_t* 
 				// printf("Ray collided at (%.2f, %.2f, %.2f). Normal (%.2f, %.2f, %.2f)\n", o_col.pos.x, o_col.pos.y, o_col.pos.z, normal.x, normal.y, normal.z);
 			// }
 			
-			// Apply Phong reflection
+			/* ---- Apply Phong reflection ---- */
 			
 			// Add ambient lighting
 			float red_brightness = sd.ambient_brightness * sd.ambient_color.r / 255 * sd.objects[o_col.object_ind].diff_color.r / 255;
@@ -223,43 +241,87 @@ void camera::render(const scene_descriptor& sd, int width, int height, uint8_t* 
 			
 			// For each light...
 			for (int l = 0; l < sd.lights_n; l++) {
-				// Get the dot product between the direction to the light and the normal, for diffuse shading.
-				float diff = vecd3::dot((sd.lights[l].pos - o_col.pos).normalize(), normal);
+				// Get the direction from the collision to the light, normalized, and the distance and squared distance.
+				vecd3 light_dir = sd.lights[l].pos - o_col.pos;
 				
-				// if (x == 220 && y == 370) {
-					// vecd3 diffvec = (sd.lights[l].pos - o_col.pos).normalize();
-					// printf("(%.2f, %.2f, %.2f) . (%.2f, %.2f, %.2f) = %.2f\n", diffvec.x, diffvec.y, diffvec.z, normal.x, normal.y, normal.z, diff);
-				// }
+				float light_sqr_dis = light_dir.sqr_mag();
+				float light_dis = sqrt(light_sqr_dis);
 				
-				// Only illuminate if the dot product is positive.
-				if (diff >= 0) {
-					// Calculate the brightness of this point according to the inverse square law.
-					diff *= sd.lights[l].diff_brightness / (o_col.pos - sd.lights[l].pos).sqr_mag();
+				light_dir = light_dir / light_dis;
+				
+				/* ---- Shadow ---- */
+				
+				// Get whether this point is in shadow.
+				collision l_col = sd.raymarch(sd.lights[l].pos, -light_dir);
+				
+				// Calculated the darkness of the shadow.
+				float shade = 0;
+				if ((l_col.pos - o_col.pos).mag() < COLLISION_DIST * 20) {
+					// Get the light's size in radians
+					float light_view = sd.lights[l].radius / (3.14159 * light_dis);
+					
+					// Get the closest approach's size in radians
+					float aprch_view = l_col.approach_min / (3.14159 * (o_col.pos - l_col.approach_pos).mag());
+					
+					// If some of the light is occluded...
+					if (aprch_view < light_view) {
+						shade = aprch_view / light_view;
+					}
+					else {
+						shade = 1;
+					}
+				}
+			
+				if (shade > 0) {
+					/* ---- Diffuse reflection ---- */
+					
+					// Get the dot product between the direction to the light and the normal, for diffuse shading.
+					float diff = vecd3::dot(light_dir, normal);
 					
 					// if (x == 220 && y == 370) {
-						// printf("%.2f\n", diff);
+						// vecd3 diffvec = (sd.lights[l].pos - o_col.pos).normalize();
+						// printf("(%.2f, %.2f, %.2f) . (%.2f, %.2f, %.2f) = %.2f\n", diffvec.x, diffvec.y, diffvec.z, normal.x, normal.y, normal.z, diff);
 					// }
 					
-					// Modify the brightness in each color according to the calculated brightness, the light's color, and the object's color.
-					red_brightness += diff * sd.lights[l].diff_color.r / 255 * sd.objects[o_col.object_ind].diff_color.r / 255;
-					grn_brightness += diff * sd.lights[l].diff_color.g / 255 * sd.objects[o_col.object_ind].diff_color.g / 255;
-					blu_brightness += diff * sd.lights[l].diff_color.b / 255 * sd.objects[o_col.object_ind].diff_color.b / 255;
-					
-					// Get the dot product used for specular highlights.
-					float spec = vecd3::dot(vecd3::rev_reflect(o_col.pos - sd.lights[l].pos, normal).normalize(), (pos - o_col.pos).normalize());
-					
-					// If spec is non-negative, add specular highlights.
-					if (spec >= 0) {
-						// Raise the dot product to the power of the object's shininess.
-						spec = pow(spec, sd.objects[o_col.object_ind].shininess);
-						
+					// Only illuminate if the dot product is positive.
+					if (diff >= 0) {
 						// Calculate the brightness of this point according to the inverse square law.
-						spec *= sd.lights[l].spec_brightness / (o_col.pos - sd.lights[l].pos).sqr_mag();
+						diff *= sd.lights[l].diff_brightness / light_sqr_dis;
 						
-						// Modify the brightness.
-						red_brightness += spec * sd.lights[l].spec_color.r / 255 * sd.objects[o_col.object_ind].spec_color.r / 255;
-						grn_brightness += spec * sd.lights[l].spec_color.g / 255 * sd.objects[o_col.object_ind].spec_color.g / 255;
-						blu_brightness += spec * sd.lights[l].spec_color.b / 255 * sd.objects[o_col.object_ind].spec_color.b / 255;
+						// if (x == 220 && y == 370) {
+							// printf("%.2f\n", diff);
+						// }
+						
+						// Modify the brightness in each color according to the calculated brightness, the light's color, and the object's color.
+						red_brightness += shade * diff * sd.lights[l].diff_color.r / 255 * sd.objects[o_col.object_ind].diff_color.r / 255;
+						grn_brightness += shade * diff * sd.lights[l].diff_color.g / 255 * sd.objects[o_col.object_ind].diff_color.g / 255;
+						blu_brightness += shade * diff * sd.lights[l].diff_color.b / 255 * sd.objects[o_col.object_ind].diff_color.b / 255;
+						
+						/* ---- Specular reflection ---- */
+						
+						// Get the direction from the collision to the camera's position.
+						vecd3 viewer_dir = (pos - o_col.pos).normalize();
+						
+						// Get the direction a perfectly reflected ray would be traveling.
+						vecd3 reflected_dir = vecd3::reflect(light_dir, normal);
+						
+						// Get the dot product used for specular highlights.
+						float spec = vecd3::dot(reflected_dir, viewer_dir);
+						
+						// If spec is non-negative, add specular highlights.
+						if (spec >= 0) {
+							
+							// Raise the dot product to the power of the object's shininess.
+							spec = pow(spec, sd.objects[o_col.object_ind].shininess);
+							
+							// Calculate the brightness of this point according to the inverse square law.
+							spec *= sd.lights[l].spec_brightness / light_sqr_dis;
+							
+							// Modify the brightness.
+							red_brightness += shade * spec * sd.lights[l].spec_color.r / 255 * sd.objects[o_col.object_ind].spec_color.r / 255;
+							grn_brightness += shade * spec * sd.lights[l].spec_color.g / 255 * sd.objects[o_col.object_ind].spec_color.g / 255;
+							blu_brightness += shade * spec * sd.lights[l].spec_color.b / 255 * sd.objects[o_col.object_ind].spec_color.b / 255;
+						}
 					}
 				}
 			}
@@ -283,7 +345,3 @@ void camera::render(const scene_descriptor& sd, int width, int height, uint8_t* 
 		}
 	}
 }
-
-/* ---- collision ---- */
-
-collision::collision() : pos(0, 0, 0), object_ind(-1) {}

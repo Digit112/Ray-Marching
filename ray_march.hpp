@@ -45,6 +45,8 @@ class light {
 public:
 	vecd3 pos;
 	
+	float radius;
+	
 	float diff_brightness;
 	float spec_brightness;
 	
@@ -52,7 +54,7 @@ public:
 	rgb spec_color;
 	
 	light(); // Does nothing.
-	light(vecd3 pos, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color);
+	light(vecd3 pos, float radius, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color);
 };
 
 // Used internally to hold the distance function's return.
@@ -68,6 +70,9 @@ public:
 	vecd3 pos;
 	
 	int object_ind;
+	
+	float approach_min;
+	vecd3 approach_pos;
 	
 	collision();
 };
@@ -101,7 +106,7 @@ public:
 	void add_object_with_params(dist_f distance, vecd3 pos, quaternion rot, rgb diff_color, rgb spec_color, float shininess, int params_n, float* params);
 	
 	// Adds a light to the scene.
-	void add_light(vecd3 pos, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color);
+	void add_light(vecd3 pos, float radius, float diff_brightness, rgb diff_color, float spec_brightness, rgb spec_color);
 	
 	// Get the distaance to a particular object.
 	double distance_to_individual(vecd3 pos, int object_ind) const;
