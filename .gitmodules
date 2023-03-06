@@ -1,3 +1,6 @@
 [submodule "utility"]
 	path = utility
 	url = https://github.com/digit112/utility
+[submodule "utility_GPU"]
+	path = utility_GPU
+	url = https://github.com/Digit112/utility_GPU
