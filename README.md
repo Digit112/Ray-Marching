@@ -19,7 +19,7 @@ By far my favorite feature of this library is that it is compatible both with NV
 
     #define GPU_ENABLED
 
-and compile with `nvcc` instead of your normal compiler.You will need to install the CUDA toolkit and Visual Studio first.
+and compile with `nvcc` instead of your normal compiler. You will need to install the CUDA toolkit and Visual Studio first.
 
 All distance estimators and shaders are 100% reusable between the CPU and GPU. There is no need to define two versions of a function like this unless, for example, you intend to re-write one version to be more efficient on that device.
 
