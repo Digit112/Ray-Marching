@@ -147,12 +147,13 @@ void cast_secondary(const scene_descriptor& sd, const camera& cam, int nsl, int 
 			// NOTE: The glow will be inaccurate due to the fact that the primary rays don't send their closest approaches to the secondary rays that they spawn.
 			rgb color;
 			if (s_col.object_ind == -1) {
-				float glow = 0.15 / ((float) 15 * s_col.approach_min + 1);
+				// float glow = 0.15 / ((float) 15 * s_col.approach_min + 1);
 				
-				float hue = s_col.approach_pos.mag() / 1.2 * 360;
-				rgb glow_color(hsv(hue, 0.75, glow));
+				// float hue = s_col.approach_pos.mag() / 1.2 * 360;
+				// rgb glow_color(hsv(hue, 0.75, glow));
 				
-				color = {glow_color.r * 255, glow_color.g * 255, glow_color.b * 255};
+				// color = {glow_color.r * 255, glow_color.g * 255, glow_color.b * 255};
+				color = {0, 0, 0};
 			}
 			else {
 				// Get the color from this object's shader.
@@ -207,7 +208,173 @@ double INFINITE_PLANE(vecd3 pos, float* params) {
 	return pos.z;
 }
 
-// No Params
+// Params:
+// 1, 2, 3 - First vertex
+// 4, 5, 6 - Second vertex
+// 7, 8, 9 - Third vertex
+// P1P2 must be the longest line in the triangle
+#ifdef GPU_ENABLED
+__device__
+#endif
+double TRIANGLE(vecd3 pos, float* params) {
+	vecd3 p1 = vecd3(params[0], params[1], params[2]);
+	vecd3 p2 = vecd3(params[3], params[4], params[5]);
+	vecd3 p3 = vecd3(params[6], params[7], params[8]);
+	
+	// Ensure p1p2 is the longest edge.
+	double p1p2 = (p1-p2).sqr_mag();
+	double p2p3 = (p2-p3).sqr_mag();
+	double p3p1 = (p3-p1).sqr_mag();
+	if (p2p3 > p1p2) {
+		vecd3 tmp;
+		if (p2p3 > p3p1) {
+			tmp = p1;
+			p1 = p3;
+			p3 = tmp;
+		}
+		else {
+			tmp = p3;
+			p3 = p2;
+			p2 = tmp;
+		}
+	}
+	else if (p3p1 > p1p2) {
+		vecd3 tmp;
+		tmp = p3;
+		p3 = p2;
+		p2 = tmp;
+	}
+	
+	// Normal
+	vecd3 n = vecd3::cross(p2 - p1, p3 - p1).normalize();
+	
+	//printf("(%.2f, %.2f, %.2f) -> (%.2f, %.2f, %.2f), (%.2f, %.2f, %.2f), (%.2f, %.2f, %.2f))\n", pos.x, pos.y, pos.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z, p3.x, p3.y, p3.z);
+	
+	//printf("n: (%.2f, %.2f, %.2f)\n", n.x, n.y, n.z);
+	
+	// p0 is the intersection between the line of direction n that passes through pos and the plane of the triangle.
+	double t = vecd3::dot(n, p1) - vecd3::dot(n, pos);
+	vecd3 p0 = pos + n * t;
+	
+	//printf("p0: (%.2f, %.2f, %.2f)\n", p0.x, p0.y, p0.z);
+	
+	// Axes defining a space in the triangle's plane.
+	// eu & ev are certain to form a right angle and are normalized
+	vecd3 eu = (p2 - p1).normalize();
+	vecd3 ev = ((p3 - p1) - eu * vecd3::dot(eu, p3 - p1)).normalize();
+	
+	// Calculate the plane coordinates of the points of the triangle.
+	// p1 is (0, 0)
+	// p2 is (w, 0)
+	// p3 is (g, h)
+	// and |w| >= |g|
+	double w = vecd3::dot(eu, (p2 - p1)); // TODO: This line should be simplified
+	double g = vecd3::dot(eu, (p3 - p1));
+	double h = vecd3::dot(ev, (p3 - p1));
+	
+	// Calculate the plane coordinates of p0
+	double u = vecd3::dot(eu, (p0 - p1));
+	double v = vecd3::dot(ev, (p0 - p1));
+		
+	// Check if (u, v) is not in the triangle.
+	if ((u < 0) ||
+		(u > w) ||
+		(v < 0) ||
+		(v > h) ||
+		(u <= g && v > u*h/g) ||
+		(u >= g && v > (w-u) * h / (w-g))) {
+		
+		// In this case, the projection is not in the triangle.
+		// https://www.desmos.com/calculator/orwi3pg5eu
+		if (v < 0) {
+			if (u < 0) {
+				// black
+				return vecd3::distance(pos, p1);
+			}
+			else if (u > w) {
+				// red
+				return vecd3::distance(pos, p2);
+			}
+			else {
+				// blue
+				// Distance to P1P2
+				return vecd3::distance(pos, (p2 - p1) * u / w + p1);
+			}
+		}
+		else if (v > h / g * u) {
+			if (v < (w - u) * h / (w - g)) {
+				if (v > -u * h / (w - g)) {
+					// green
+					// Distance to P1P3
+					vecd3 dir = (p1 - p3).normalize();
+					vecd3 v = pos - p3;
+					double t = vecd3::dot(v, dir);
+					return vecd3::distance(p3 + dir * t, pos);
+					
+				}
+				else {
+					// black
+					return vecd3::distance(pos, p1);
+				}
+			}
+			else {
+				// purple
+				return vecd3::distance(pos, p3);
+			}
+		}
+		else {
+			if (v > h / g * (u - w)) {
+				// orange
+				// Distance to P2P3
+				vecd3 dir = (p2 - p3).normalize();
+				vecd3 v = pos - p3;
+				double t = vecd3::dot(v, dir);
+				return vecd3::distance(p3 + dir * t, pos);
+			}
+			else {
+				// red
+				return vecd3::distance(pos, p2);
+			}
+		}
+	}
+	
+	return vecd3::distance(pos, p0);
+}
+
+// Params:
+// 1, 2, 3 - First vertex
+// 4, 5, 6 - Second vertex
+// 7, 8, 9 - Third vertex
+// 10, 11, 12 - Fourth vertex
+#ifdef GPU_ENABLED
+__device__
+#endif
+double TETRAHEDRON(vecd3 pos, float* params) {
+	float tmp;
+	
+	// First tri
+	double dist = TRIANGLE(pos, params);
+	
+	tmp = params[8]; params[8] = params[11]; params[11] = tmp;
+	tmp = params[7]; params[7] = params[10]; params[10] = tmp;
+	tmp = params[6]; params[6] = params[ 9]; params[ 9] = tmp;
+	dist = DEV_MIN(dist, TRIANGLE(pos, params));
+	
+	tmp = params[5]; params[5] = params[11]; params[11] = tmp;
+	tmp = params[4]; params[4] = params[10]; params[10] = tmp;
+	tmp = params[3]; params[3] = params[ 9]; params[ 9] = tmp;
+	dist = DEV_MIN(dist, TRIANGLE(pos, params));
+	
+	tmp = params[2]; params[2] = params[11]; params[11] = tmp;
+	tmp = params[1]; params[1] = params[10]; params[10] = tmp;
+	tmp = params[0]; params[0] = params[ 9]; params[ 9] = tmp;
+	dist = DEV_MIN(dist, TRIANGLE(pos, params));
+	
+	return dist;
+}
+
+// Params:
+//  1 - Exponent
 #ifdef GPU_ENABLED
 __device__
 #endif
@@ -244,12 +411,69 @@ double MANDELBULB(vecd3 pos, float* params) {
 	return 0.5 * log(r) * r / dr;
 }
 
+// Params:
+//  1 - Number of iterations
+#ifdef GPU_ENABLED
+__device__
+#endif
+double SIERPINSKI(vecd3 pos, float* params) {
+	int power = (int) params[0];
+	
+	double s89 = sqrt((float) 8/9);
+	double s29 = sqrt((float) 2/9);
+	double s23 = sqrt((float) 2/3);
+	double d13 = (float) 1/3;
+	
+	vecd3 a1( s89,    0, -d13);
+	vecd3 a2(-s29,  s23, -d13);
+	vecd3 a3(-s29, -s23, -d13);
+	vecd3 a4(0, 0, 1);
+	
+	for (int i = 0; i < power; i++) {
+		float dist = vecd3::distance(pos, a1);
+		vecd3 scale_from = a1;
+		
+		float d = vecd3::distance(pos, a2);
+		if (d < dist) {
+			dist = d;
+			scale_from = a2;
+		}
+		
+		d = vecd3::distance(pos, a3);
+		if (d < dist) {
+			dist = d;
+			scale_from = a3;
+		}
+		
+		d = vecd3::distance(pos, a4);
+		if (d < dist) {
+			scale_from = a4;
+		}
+		
+		pos = pos*2 - scale_from;
+	}
+	
+	float points[] = {
+		(float) a1.x, (float) a1.y, (float) a1.z,
+		(float) a2.x, (float) a2.y, (float) a2.z,
+		(float) a3.x, (float) a3.y, (float) a3.z,
+		(float) a4.x, (float) a4.y, (float) a4.z
+	};
+	
+	double dist = TETRAHEDRON(pos, points);
+	
+	return dist * pow(2, -power);
+}
+
 /* ---- Constants representing the number of parameters each shape uses ---- */
 
 #define SPHERE_N 1
 #define INFINITE_PLANE_N 0
 #define CUBE_N 6
+#define TRIANGLE_N 9
+#define TETRAHEDRON_N 12
 #define MANDELBULB_N 1
+#define SIERPINSKI_N 1
 
 /* ---- Default shaders ---- */
 
@@ -399,16 +623,18 @@ rgb PHONG(const scene_descriptor& sd, const camera& c, const collision& o_col) {
 	}
 
 	// Set the pixel color according to the brightness.
-	float final_r = (red_brightness / 350);
+	double final_r = (red_brightness / 350);
 	final_r = final_r - log(exp(7 * final_r) + exp(7.0)) / 7 + 1;
 
-	float final_g = (grn_brightness / 350);
+	double final_g = (grn_brightness / 350);
 	final_g = final_g - log(exp(7 * final_g) + exp(7.0)) / 7 + 1;
 
-	float final_b = (blu_brightness / 350);
+	double final_b = (blu_brightness / 350);
 	final_b = final_b - log(exp(7 * final_b) + exp(7.0)) / 7 + 1;
 	
-	return rgb((uint8_t) (final_r * 255), (uint8_t) (final_g * 255), (uint8_t) (final_b * 255));
+	rgb ret = rgb(DEV_MIN(final_r * 255, 255), DEV_MIN(final_g * 255, 255), DEV_MIN(final_b * 255, 255));
+	
+	return ret;
 }
 
 #ifdef GPU_ENABLED
@@ -553,7 +779,10 @@ rgb MANDELBULB_SHADER(const scene_descriptor& sd, const camera& c, const collisi
 	__device__ dist_f SPHERE_GPU = SPHERE;
 	__device__ dist_f INFINITE_PLANE_GPU = INFINITE_PLANE;
 	__device__ dist_f CUBE_GPU = CUBE;
+	__device__ dist_f TRIANGLE_GPU = TRIANGLE;
+	__device__ dist_f TETRAHEDRON_GPU = TETRAHEDRON;
 	__device__ dist_f MANDELBULB_GPU = MANDELBULB;
+	__device__ dist_f SIERPINSKI_GPU = SIERPINSKI;
 
 	__device__ shde_f PHONG_GPU = PHONG;
 	__device__ shde_f MANDELBULB_SHADER_GPU = MANDELBULB_SHADER;
@@ -561,7 +790,10 @@ rgb MANDELBULB_SHADER(const scene_descriptor& sd, const camera& c, const collisi
 	dist_f SPHERE_CPU = SPHERE;
 	dist_f INFINITE_PLANE_CPU = INFINITE_PLANE;
 	dist_f CUBE_CPU = CUBE;
+	dist_f TRIANGLE_CPU = TRIANGLE;
+	dist_f TETRAHEDRON_CPU = TETRAHEDRON;
 	dist_f MANDELBULB_CPU = MANDELBULB;
+	dist_f SIERPINSKI_CPU = SIERPINSKI;
 
 	shde_f PHONG_CPU = PHONG;
 	shde_f MANDELBULB_SHADER_CPU = MANDELBULB_SHADER;
@@ -1048,7 +1280,7 @@ void camera::render(const scene_descriptor& sd) {
 	int ray_kernel_width = nsl * 2 + 1;
 	
 	if (img == NULL || accl == NULL) {
-		printf("Error: Cannot render, memory uninitiaalized.\n");
+		printf("Error: Cannot render, memory uninitialized.\n");
 		exit(1);
 	}
 	
@@ -1075,7 +1307,6 @@ void camera::render(const scene_descriptor& sd) {
 		}
 		
 		cudaMemcpy(sd_gpu, &sd, sizeof(scene_descriptor), cudaMemcpyHostToDevice);
-		
 		err = cudaGetLastError();
 		if (err != cudaSuccess) {
 			printf("Moved Descriptor to Device: %s\n", cudaGetErrorName(err));
